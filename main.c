@@ -4,6 +4,40 @@
 
 #define SOF_BYTE 0xAA  // Start of Frame
 #define MAX_PAYLOAD 8
+#define RING_BUFFER_SIZE 32
+
+// --- RING BUFFER ---
+typedef struct {
+    uint8_t buffer[RING_BUFFER_SIZE];
+    uint16_t head;
+    uint16_t tail;
+    uint16_t count;
+} RingBuffer_t;
+
+RingBuffer_t rx_buffer = { .head = 0, .tail = 0, .count = 0 };
+
+// Lägg till ett byte i bufferten (Simulerar hårdvaru-interrupt / ISR)
+bool ring_buffer_push(uint8_t byte) {
+    if (rx_buffer.count >= RING_BUFFER_SIZE) {
+        return false; // Bufferten är full (Overflow!)
+    }
+    rx_buffer.buffer[rx_buffer.head] = byte;
+    rx_buffer.head = (rx_buffer.head + 1) % RING_BUFFER_SIZE;
+    rx_buffer.count++;
+    return true;
+}
+
+// Hämta ett byte från bufferten (Simulerar mjukvarans bearbetning)
+bool ring_buffer_pop(uint8_t *byte) {
+    if (rx_buffer.count == 0) {
+        return false; // Bufferten är tom
+    }
+    *byte = rx_buffer.buffer[rx_buffer.tail];
+    rx_buffer.tail = (rx_buffer.tail + 1) % RING_BUFFER_SIZE;
+    rx_buffer.count--;
+    return true;
+}
+// ---------------------------
 
 // Definition av ett nätverkspaket
 typedef struct {
@@ -52,7 +86,7 @@ void process_raw_byte_stream(uint8_t byte) {
                     state = STATE_GET_PAYLOAD;
                 }
             } else {
-                state = STATE_IDLE; // Felaktig längd, återställ
+                state = STATE_IDLE;
             }
             break;
 
@@ -67,7 +101,6 @@ void process_raw_byte_stream(uint8_t byte) {
             rx_packet.checksum = byte;
             uint8_t calculated_crc = calculate_checksum(rx_packet.command_id, rx_packet.length, rx_packet.payload);
             
-            // Validera paket
             if (calculated_crc == rx_packet.checksum) {
                 printf("[PARSER] Lyckat paket mottaget! CMD: 0x%02X, Längd: %d\n", rx_packet.command_id, rx_packet.length);
                 if (rx_packet.command_id == 0x01) {
@@ -84,29 +117,24 @@ void process_raw_byte_stream(uint8_t byte) {
 }
 
 int main() {
-    printf("--- Startar Embedded Packet Parser Simulator ---\n\n");
+    printf("--- Startar Embedded Parser med Ring Buffer ---\n\n");
 
-    // 1. Simulera en giltig dataström (Status OK)
-    // SOF (0xAA), CMD (0x01), LEN (0x00), CRC (0x01)
-    uint8_t valid_stream1[] = { 0xAA, 0x01, 0x00, 0x01 };
-    printf("Skickar giltig dataström 1 (Statuskommando)...\n");
-    for (int i = 0; i < sizeof(valid_stream1); i++) {
-        process_raw_byte_stream(valid_stream1[i]);
+    // Giltigt paket: SOF (0xAA), CMD (0x02), LEN (0x01), PAYLOAD (0x2A), CRC (0x29)
+    uint8_t raw_data[] = { 0xAA, 0x02, 0x01, 0x2A, 0x29 };
+
+    // 1. Simulera hårdvaruankomst: Tryck in bytes i vår Ring Buffer
+    printf("[HÅRDVARA] Tar emot %zu bytes till Ring Buffer...\n", sizeof(raw_data));
+    for (int i = 0; i < sizeof(raw_data); i++) {
+        if (!ring_buffer_push(raw_data[i])) {
+            printf("[ERROR] Buffer Overflow!\n");
+        }
     }
 
-    // 2. Simulera en giltig dataström med payload (Sensorvärde 42)
-    // SOF (0xAA), CMD (0x02), LEN (0x01), PAYLOAD (0x2A = 42), CRC (0x02 ^ 0x01 ^ 0x2A = 0x29)
-    uint8_t valid_stream2[] = { 0xAA, 0x02, 0x01, 0x2A, 0x29 };
-    printf("\nSkickar giltig dataström 2 (Sensorvärde 42)...\n");
-    for (int i = 0; i < sizeof(valid_stream2); i++) {
-        process_raw_byte_stream(valid_stream2[i]);
-    }
-
-    // 3. Simulera korrupt data (Felaktig checksumma)
-    uint8_t corrupt_stream[] = { 0xAA, 0x02, 0x01, 0x2A, 0x99 }; // 0x99 är fel CRC
-    printf("\nSkickar korrupt dataström...\n");
-    for (int i = 0; i < sizeof(corrupt_stream); i++) {
-        process_raw_byte_stream(corrupt_stream[i]);
+    // 2. Simulera mjukvaru-loopen: Töm bufferten och skicka till parsern
+    printf("[MJUKVARA] Tömmer Ring Buffer och skickar till FSM Parser:\n");
+    uint8_t byte_from_buffer;
+    while (ring_buffer_pop(&byte_from_buffer)) {
+        process_raw_byte_stream(byte_from_buffer);
     }
 
     return 0;
